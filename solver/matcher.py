@@ -96,27 +96,41 @@ class CoWMatcher:
                     prices[token_a] = price_a
                     prices[token_b] = price_b
 
-                    # Execute full amounts if volume aligns
-                    matched_trades.append(
-                        TradeExecution(
-                            order_uid=order_a.uid,
-                            executed_amount=order_a.sell_amount,
-                        )
-                    )
-                    matched_trades.append(
-                        TradeExecution(
-                            order_uid=order_b.uid,
-                            executed_amount=order_b.sell_amount,
-                        )
+                    # Calculate mutually balanced execution amounts ensuring zero deficit
+                    # Option 1: Bound by Order A volume
+                    cand_exec_a = order_a.sell_amount
+                    cand_exec_b = int(
+                        Decimal(cand_exec_a) * Decimal(price_a) / Decimal(price_b)
                     )
 
-                    # Calculate surplus for score
-                    surplus_a = int(
-                        Decimal(order_a.sell_amount) * clearing_r - Decimal(order_a.buy_amount)
+                    if cand_exec_b <= order_b.sell_amount and cand_exec_a >= order_b.buy_amount:
+                        exec_a = cand_exec_a
+                        exec_b = cand_exec_b
+                    else:
+                        # Option 2: Bound by Order B volume
+                        cand_exec_b = order_b.sell_amount
+                        cand_exec_a = int(
+                            Decimal(cand_exec_b) * Decimal(price_b) / Decimal(price_a)
+                        )
+                        if (
+                            cand_exec_a <= order_a.sell_amount
+                            and cand_exec_b >= order_a.buy_amount
+                        ):
+                            exec_a = cand_exec_a
+                            exec_b = cand_exec_b
+                        else:
+                            continue
+
+                    matched_trades.append(
+                        TradeExecution(order_uid=order_a.uid, executed_amount=exec_a)
                     )
-                    surplus_b = int(
-                        Decimal(order_b.sell_amount) - Decimal(order_b.buy_amount) * clearing_r
+                    matched_trades.append(
+                        TradeExecution(order_uid=order_b.uid, executed_amount=exec_b)
                     )
+
+                    # Calculate user surplus in buy units
+                    surplus_a = exec_b - order_a.buy_amount
+                    surplus_b = exec_a - order_b.buy_amount
                     total_surplus += max(0, surplus_a) + max(0, surplus_b)
                     break
 
