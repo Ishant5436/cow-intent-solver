@@ -8,3 +8,4 @@ __pycache__/
 !tests/*.json
 !examples/*.json
 .env
+*.egg-info/
