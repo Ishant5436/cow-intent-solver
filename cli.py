@@ -147,21 +147,34 @@ def run_simulate():
     console.print(Panel(summary_text, title="📊 Batch Execution Telemetry", border_style="green"))
 
 
-async def run_listen(network: str = "mainnet"):
-    """Listen to live CoW Protocol auction API."""
+async def run_listen(network: str = "mainnet", max_retries: int = 3, interval: float = 3.0):
+    """Listen to live CoW Protocol auction API with bounded polling retries."""
     console.print(render_header())
     client = CoWDriverClient()
     matcher = CoWMatcher()
     validator = SettlementValidator()
 
     try:
-        with console.status(f"[bold cyan]Connecting to live CoW {network} auction stream..."):
-            auction = await client.fetch_current_auction(network=network)
+        auction = None
+        for attempt in range(1, max_retries + 1):
+            with console.status(
+                f"[bold cyan]Attempt {attempt}/{max_retries}: "
+                f"Fetching CoW {network} auction batch..."
+            ):
+                auction = await client.fetch_current_auction(network=network)
+
+            if auction:
+                break
+
+            console.print(
+                f"[yellow]Batch not active (attempt {attempt}/{max_retries}). "
+                f"Waiting {interval}s...[/yellow]"
+            )
+            await asyncio.sleep(interval)
 
         if not auction:
             console.print(
-                f"[yellow]No active batch currently open on {network}. "
-                "CoW auctions open every 15-30s. Retrying...[/yellow]"
+                f"[bold yellow]No active batch found after {max_retries} attempts.[/bold yellow]"
             )
             return
 
@@ -179,6 +192,7 @@ async def run_listen(network: str = "mainnet"):
 
     except Exception as err:
         console.print(f"[bold red]Live query error:[/bold red] {err}")
+        sys.exit(1)
     finally:
         await client.close()
 

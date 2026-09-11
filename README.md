@@ -12,7 +12,7 @@ High-Performance CoW Protocol Off-Chain Intent Solver and Batch Auction Matching
 
 ### 1. Environment Setup
 ```bash
-cd /Users/ishantpanchal/cow-intent-solver
+cd /path/to/cow-intent-solver
 source .venv/bin/activate
 ```
 

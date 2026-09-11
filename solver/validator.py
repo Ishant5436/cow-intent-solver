@@ -70,4 +70,30 @@ class SettlementValidator:
                     f"received {executed_buy_amount} < minimum {required_buy_amount}"
                 )
 
+        # Check aggregate token balance conservation
+        from collections import defaultdict
+
+        token_inflow: dict[str, int] = defaultdict(int)
+        token_outflow: dict[str, int] = defaultdict(int)
+
+        for trade in solution.trades:
+            order = order_map.get(trade.order_uid)
+            if not order:
+                continue
+            s_price = solution.prices.get(order.sell_token)
+            b_price = solution.prices.get(order.buy_token)
+            if not s_price or not b_price:
+                continue
+
+            token_inflow[order.sell_token] += trade.executed_amount
+            buy_amt = int(Decimal(trade.executed_amount) * Decimal(s_price) / Decimal(b_price))
+            token_outflow[order.buy_token] += buy_amt
+
+        for token in set(token_inflow) | set(token_outflow):
+            if token_outflow[token] > token_inflow[token]:
+                errors.append(
+                    f"Token conservation deficit for {token}: "
+                    f"outflow {token_outflow[token]} > inflow {token_inflow[token]}"
+                )
+
         return ValidationResult(is_valid=(len(errors) == 0), errors=errors)
