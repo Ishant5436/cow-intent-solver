@@ -148,3 +148,70 @@ def test_validator_rejects_token_conservation_deficit():
     assert not result.is_valid
     assert any("Token conservation deficit" in err for err in result.errors)
 
+
+def test_validator_rejects_cumulative_over_execution():
+    """Verify validator flags order whose cumulative execution exceeds sell_amount."""
+    auction = AuctionInstance(
+        id="over_exec_batch",
+        tokens={WETH: TokenMetadata(decimals=18), USDC: TokenMetadata(decimals=6)},
+        orders=[
+            Order(
+                uid="order_bob",
+                sell_token=USDC,
+                buy_token=WETH,
+                sell_amount=100,
+                buy_amount=100,
+            ),
+        ],
+    )
+
+    # Bob authorized 100, but solution includes two trades of 60 each (total 120)
+    solution = Solution(
+        prices={WETH: 1_000_000_000_000_000_000, USDC: 1_000_000_000_000_000_000},
+        trades=[
+            TradeExecution(order_uid="order_bob", executed_amount=60),
+            TradeExecution(order_uid="order_bob", executed_amount=60),
+        ],
+    )
+
+    validator = SettlementValidator()
+    result = validator.validate(auction, solution)
+    assert not result.is_valid
+    expected_err = "Order order_bob over-executed: total executed 120 > authorized sell amount 100"
+    assert any(expected_err in err for err in result.errors)
+
+
+def test_validator_rejects_double_fill_conservation_deficit():
+    """Verify validator independent conservation check catches double-fill deficits."""
+    TOKEN_A = "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    TOKEN_B = "0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+
+    auction = AuctionInstance(
+        id="double_fill_deficit_test",
+        tokens={},
+        orders=[
+            Order(uid="a1", sell_token=TOKEN_A, buy_token=TOKEN_B, sell_amount=100, buy_amount=100),
+            Order(uid="a2", sell_token=TOKEN_A, buy_token=TOKEN_B, sell_amount=100, buy_amount=100),
+            Order(uid="b1", sell_token=TOKEN_B, buy_token=TOKEN_A, sell_amount=100, buy_amount=100),
+        ],
+    )
+
+    # Rogue solution executing b1 twice to satisfy both a1 and a2
+    solution = Solution(
+        prices={TOKEN_A: 1_000_000_000_000_000_000, TOKEN_B: 1_000_000_000_000_000_000},
+        trades=[
+            TradeExecution(order_uid="a1", executed_amount=100),
+            TradeExecution(order_uid="b1", executed_amount=100),
+            TradeExecution(order_uid="a2", executed_amount=100),
+            TradeExecution(order_uid="b1", executed_amount=100),
+        ],
+    )
+
+    validator = SettlementValidator()
+    result = validator.validate(auction, solution)
+    assert not result.is_valid
+    # Must flag both over-execution AND token conservation deficit
+    assert any("Order b1 over-executed" in err for err in result.errors)
+    assert any(f"Token conservation deficit for {TOKEN_B}" in err for err in result.errors)
+
+

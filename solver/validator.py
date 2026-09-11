@@ -6,6 +6,7 @@ Verifies that proposed batch auction settlement solutions strictly satisfy:
 3. Valid execution bounds (executed <= order sell amount).
 """
 
+from collections import defaultdict
 from decimal import Decimal
 from typing import NamedTuple
 
@@ -25,6 +26,9 @@ class SettlementValidator:
         errors: list[str] = []
         order_map: dict[str, Order] = {o.uid: o for o in auction.orders}
 
+        # Track cumulative executed amount per order across all trades
+        executed_per_order: dict[str, int] = defaultdict(int)
+
         for trade in solution.trades:
             order = order_map.get(trade.order_uid)
             if not order:
@@ -35,11 +39,7 @@ class SettlementValidator:
                 errors.append(f"Invalid non-positive executed amount: {trade.executed_amount}")
                 continue
 
-            if trade.executed_amount > order.sell_amount:
-                errors.append(
-                    f"Execution exceeds order sell amount: "
-                    f"{trade.executed_amount} > {order.sell_amount}"
-                )
+            executed_per_order[trade.order_uid] += trade.executed_amount
 
             # Check prices
             sell_price = solution.prices.get(order.sell_token)
@@ -70,11 +70,25 @@ class SettlementValidator:
                     f"received {executed_buy_amount} < minimum {required_buy_amount}"
                 )
 
-        # Check aggregate token balance conservation
-        from collections import defaultdict
+        # 1. Enforce cumulative execution bound per order against authorized sell_amount
+        for uid, total_exec in executed_per_order.items():
+            order = order_map.get(uid)
+            if order and total_exec > order.sell_amount:
+                errors.append(
+                    f"Order {uid} over-executed: "
+                    f"total executed {total_exec} > authorized sell amount {order.sell_amount}"
+                )
 
-        token_inflow: dict[str, int] = defaultdict(int)
+        # 2. Independent token balance conservation:
+        # Contract solvency guarantees that total delivered outflow cannot exceed
+        # authorized signed inflow deposited by traders.
+        authorized_inflow: dict[str, int] = defaultdict(int)
         token_outflow: dict[str, int] = defaultdict(int)
+
+        for uid, total_exec in executed_per_order.items():
+            order = order_map.get(uid)
+            if order:
+                authorized_inflow[order.sell_token] += min(order.sell_amount, total_exec)
 
         for trade in solution.trades:
             order = order_map.get(trade.order_uid)
@@ -85,15 +99,15 @@ class SettlementValidator:
             if not s_price or not b_price:
                 continue
 
-            token_inflow[order.sell_token] += trade.executed_amount
             buy_amt = int(Decimal(trade.executed_amount) * Decimal(s_price) / Decimal(b_price))
             token_outflow[order.buy_token] += buy_amt
 
-        for token in set(token_inflow) | set(token_outflow):
-            if token_outflow[token] > token_inflow[token]:
+        for token in set(authorized_inflow) | set(token_outflow):
+            if token_outflow[token] > authorized_inflow[token]:
                 errors.append(
                     f"Token conservation deficit for {token}: "
-                    f"outflow {token_outflow[token]} > inflow {token_inflow[token]}"
+                    f"outflow {token_outflow[token]} > authorized inflow {authorized_inflow[token]}"
                 )
 
         return ValidationResult(is_valid=(len(errors) == 0), errors=errors)
+

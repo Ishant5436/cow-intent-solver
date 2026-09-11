@@ -133,3 +133,58 @@ def test_matched_uids_not_reused():
     alice_matches = [t for t in solution.trades if t.order_uid == "order_alice"]
     assert len(alice_matches) == 1
 
+
+def test_double_fill_prevention_competing_orders():
+    """Verify that multiple orders on side A cannot double-fill a single counter-order on side B."""
+    auction = AuctionInstance(
+        id="test_competing_orders",
+        tokens={},
+        orders=[
+            Order(uid="a1", sell_token=WETH, buy_token=USDC, sell_amount=100, buy_amount=100),
+            Order(uid="a2", sell_token=WETH, buy_token=USDC, sell_amount=100, buy_amount=100),
+            Order(uid="b1", sell_token=USDC, buy_token=WETH, sell_amount=100, buy_amount=100),
+        ],
+    )
+
+    matcher = CoWMatcher()
+    solution = matcher.match_auction(auction)
+
+    b1_trades = [t for t in solution.trades if t.order_uid == "b1"]
+    total_b1_executed = sum(t.executed_amount for t in b1_trades)
+
+    # b1 must be executed at most once, and total executed must not exceed authorized 100
+    assert len(b1_trades) == 1
+    assert total_b1_executed == 100
+
+
+def test_stale_transitive_price_rejected_when_limits_violated():
+    """Verify matcher does not execute trades when transitively implied prices violate limits."""
+    TOKEN_A = "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    TOKEN_B = "0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+    TOKEN_C = "0xcccccccccccccccccccccccccccccccccccccccc"
+
+    # Pair A/B clears at 1:1, setting P_A = P_B
+    # Pair B/C clears at ~2.1:1, setting P_C = P_B / 2.1
+    # Transitively, P_A / P_C ≈ 2.1
+    # Orders A2/C2 signed limits around 1:1 (buy_amount 90 for sell_amount 100)
+    auction = AuctionInstance(
+        id="stale_price_test",
+        tokens={},
+        orders=[
+            Order(uid="a1", sell_token=TOKEN_A, buy_token=TOKEN_B, sell_amount=100, buy_amount=100),
+            Order(uid="b1", sell_token=TOKEN_B, buy_token=TOKEN_A, sell_amount=100, buy_amount=100),
+            Order(uid="b2", sell_token=TOKEN_B, buy_token=TOKEN_C, sell_amount=100, buy_amount=200),
+            Order(uid="c1", sell_token=TOKEN_C, buy_token=TOKEN_B, sell_amount=220, buy_amount=100),
+            Order(uid="a2", sell_token=TOKEN_A, buy_token=TOKEN_C, sell_amount=100, buy_amount=90),
+            Order(uid="c2", sell_token=TOKEN_C, buy_token=TOKEN_A, sell_amount=100, buy_amount=90),
+        ],
+    )
+
+    matcher = CoWMatcher()
+    solution = matcher.match_auction(auction)
+
+    # A2 and C2 must not be matched because the transitively fixed prices violate limits
+    ac_trades = [t for t in solution.trades if t.order_uid in ("a2", "c2")]
+    assert len(ac_trades) == 0
+
+

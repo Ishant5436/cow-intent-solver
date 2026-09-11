@@ -74,67 +74,94 @@ class CoWMatcher:
                 max_r_b = Decimal(order_b.sell_amount) / Decimal(order_b.buy_amount)
 
                 # Check if prices cross (spread is non-negative)
-                if min_r_a <= max_r_b:
-                    clearing_r = (min_r_a + max_r_b) / Decimal(2)
-                    scale = Decimal(10**18)
+                if min_r_a > max_r_b:
+                    continue
 
-                    # Maintain consistent global price vector
-                    if token_a in global_prices and token_b not in global_prices:
-                        price_a = global_prices[token_a]
-                        price_b = max(1, int(Decimal(price_a) / clearing_r))
-                    elif token_b in global_prices and token_a not in global_prices:
-                        price_b = global_prices[token_b]
-                        price_a = max(1, int(Decimal(price_b) * clearing_r))
-                    elif token_a in global_prices and token_b in global_prices:
-                        price_a = global_prices[token_a]
-                        price_b = global_prices[token_b]
+                clearing_r = (min_r_a + max_r_b) / Decimal(2)
+                scale = Decimal(10**18)
+
+                # Maintain consistent global price vector
+                if token_a in global_prices and token_b in global_prices:
+                    price_a = global_prices[token_a]
+                    price_b = global_prices[token_b]
+                    existing_r = Decimal(price_a) / Decimal(price_b)
+                    # Stale price check: existing ratio MUST fall within [min_r_a, max_r_b]
+                    if not (min_r_a <= existing_r <= max_r_b):
+                        continue
+                elif token_a in global_prices and token_b not in global_prices:
+                    price_a = global_prices[token_a]
+                    price_b = max(1, int(Decimal(price_a) / clearing_r))
+                elif token_b in global_prices and token_a not in global_prices:
+                    price_b = global_prices[token_b]
+                    price_a = max(1, int(Decimal(price_b) * clearing_r))
+                else:
+                    if clearing_r <= 1:
+                        price_b = int(scale)
+                        price_a = max(1, int(scale * clearing_r))
                     else:
-                        if clearing_r <= 1:
-                            price_b = int(scale)
-                            price_a = max(1, int(scale * clearing_r))
-                        else:
-                            price_a = int(scale)
-                            price_b = max(1, int(scale / clearing_r))
+                        price_a = int(scale)
+                        price_b = max(1, int(scale / clearing_r))
 
-                    prices[token_a] = price_a
-                    prices[token_b] = price_b
+                # Calculate mutually balanced execution amounts ensuring zero deficit
+                # Option 1: Bound by Order A volume
+                cand_exec_a = order_a.sell_amount
+                cand_exec_b = int(
+                    Decimal(cand_exec_a) * Decimal(price_a) / Decimal(price_b)
+                )
 
-                    # Calculate mutually balanced execution amounts ensuring zero deficit
-                    # Option 1: Bound by Order A volume
-                    cand_exec_a = order_a.sell_amount
-                    cand_exec_b = int(
-                        Decimal(cand_exec_a) * Decimal(price_a) / Decimal(price_b)
+                required_b_for_order_b = int(
+                    Decimal(order_b.buy_amount)
+                    * Decimal(cand_exec_b)
+                    / Decimal(order_b.sell_amount)
+                )
+
+                if (
+                    cand_exec_b <= order_b.sell_amount
+                    and cand_exec_b >= order_a.buy_amount
+                    and cand_exec_a >= required_b_for_order_b
+                ):
+                    exec_a = cand_exec_a
+                    exec_b = cand_exec_b
+                else:
+                    # Option 2: Bound by Order B volume
+                    cand_exec_b = order_b.sell_amount
+                    cand_exec_a = int(
+                        Decimal(cand_exec_b) * Decimal(price_b) / Decimal(price_a)
+                    )
+                    required_b_for_order_a = int(
+                        Decimal(order_a.buy_amount)
+                        * Decimal(cand_exec_a)
+                        / Decimal(order_a.sell_amount)
                     )
 
-                    if cand_exec_b <= order_b.sell_amount and cand_exec_a >= order_b.buy_amount:
+                    if (
+                        cand_exec_a <= order_a.sell_amount
+                        and cand_exec_a >= order_b.buy_amount
+                        and cand_exec_b >= required_b_for_order_a
+                    ):
                         exec_a = cand_exec_a
                         exec_b = cand_exec_b
                     else:
-                        # Option 2: Bound by Order B volume
-                        cand_exec_b = order_b.sell_amount
-                        cand_exec_a = int(
-                            Decimal(cand_exec_b) * Decimal(price_b) / Decimal(price_a)
-                        )
-                        if (
-                            cand_exec_a <= order_a.sell_amount
-                            and cand_exec_b >= order_a.buy_amount
-                        ):
-                            exec_a = cand_exec_a
-                            exec_b = cand_exec_b
-                        else:
-                            continue
+                        continue
 
-                    matched_trades.append(
-                        TradeExecution(order_uid=order_a.uid, executed_amount=exec_a)
-                    )
-                    matched_trades.append(
-                        TradeExecution(order_uid=order_b.uid, executed_amount=exec_b)
-                    )
+                # Mark both order UIDs as matched to prevent double fills
+                matched_uids.add(order_a.uid)
+                matched_uids.add(order_b.uid)
 
-                    # Calculate user surplus in buy units
-                    surplus_a = exec_b - order_a.buy_amount
-                    surplus_b = exec_a - order_b.buy_amount
-                    total_surplus += max(0, surplus_a) + max(0, surplus_b)
-                    break
+                matched_trades.append(
+                    TradeExecution(order_uid=order_a.uid, executed_amount=exec_a)
+                )
+                matched_trades.append(
+                    TradeExecution(order_uid=order_b.uid, executed_amount=exec_b)
+                )
+
+                prices[token_a] = price_a
+                prices[token_b] = price_b
+
+                # Calculate user surplus in buy units
+                surplus_a = exec_b - order_a.buy_amount
+                surplus_b = exec_a - order_b.buy_amount
+                total_surplus += max(0, surplus_a) + max(0, surplus_b)
+                break
 
         return matched_trades, prices, total_surplus
