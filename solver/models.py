@@ -16,10 +16,12 @@ class OrderKind(StrEnum):
 
 
 class TokenMetadata(BaseModel):
-    model_config = ConfigDict(extra="ignore")
+    model_config = ConfigDict(extra="ignore", populate_by_name=True)
 
-    decimals: int
-    reference_price: int | None = None
+    decimals: int | None = None
+    reference_price: int | None = Field(
+        None, validation_alias="referencePrice", alias="reference_price"
+    )
 
 
 class Order(BaseModel):

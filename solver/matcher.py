@@ -19,7 +19,6 @@ class CoWMatcher:
 
     def match_auction(self, auction: AuctionInstance) -> Solution:
         """Find Coincidence-of-Wants crossings in the given auction instance."""
-        # Group orders by directed token pair: (sell_token, buy_token)
         order_book: dict[tuple[str, str], list[Order]] = defaultdict(list)
         for order in auction.orders:
             order_book[(order.sell_token, order.buy_token)].append(order)
@@ -27,13 +26,7 @@ class CoWMatcher:
         prices: dict[str, int] = {}
         trades: list[TradeExecution] = []
         total_surplus: int = 0
-
-        # Set default reference prices from tokens metadata if available
-        for token_addr, meta in auction.tokens.items():
-            if meta.reference_price:
-                prices[token_addr] = meta.reference_price
-
-        # Search for bilateral pairs: (A -> B) and (B -> A)
+        matched_uids: set[str] = set()
         seen_pairs: set[frozenset[str]] = set()
 
         for (token_a, token_b), orders_a_to_b in list(order_book.items()):
@@ -46,9 +39,8 @@ class CoWMatcher:
             if not orders_b_to_a:
                 continue
 
-            # Attempt to match bilateral orders
             pair_trades, pair_prices, pair_surplus = self._match_bilateral_pair(
-                token_a, token_b, orders_a_to_b, orders_b_to_a
+                token_a, token_b, orders_a_to_b, orders_b_to_a, matched_uids, prices
             )
             if pair_trades:
                 trades.extend(pair_trades)
@@ -63,6 +55,8 @@ class CoWMatcher:
         token_b: str,
         orders_a: list[Order],
         orders_b: list[Order],
+        matched_uids: set[str],
+        global_prices: dict[str, int],
     ) -> tuple[list[TradeExecution], dict[str, int], int]:
         """Match two sets of counter-directional orders."""
         matched_trades: list[TradeExecution] = []
@@ -70,28 +64,37 @@ class CoWMatcher:
         total_surplus: int = 0
 
         for order_a in orders_a:
-            # Order A: Sell A for B
-            # Minimum B per atom of A = buy_amount / sell_amount
+            if order_a.uid in matched_uids:
+                continue
             min_r_a = Decimal(order_a.buy_amount) / Decimal(order_a.sell_amount)
 
             for order_b in orders_b:
-                # Order B: Sell B for A
-                # Maximum B willing to give per atom of A = sell_amount / buy_amount
+                if order_b.uid in matched_uids:
+                    continue
                 max_r_b = Decimal(order_b.sell_amount) / Decimal(order_b.buy_amount)
 
                 # Check if prices cross (spread is non-negative)
                 if min_r_a <= max_r_b:
-                    # Valid clearing exchange rate R = Price(A) / Price(B)
                     clearing_r = (min_r_a + max_r_b) / Decimal(2)
-
-                    # Establish uniform prices with dynamic 10**18 scale to prevent truncation
                     scale = Decimal(10**18)
-                    if clearing_r <= 1:
-                        price_b = int(scale)
-                        price_a = max(1, int(scale * clearing_r))
+
+                    # Maintain consistent global price vector
+                    if token_a in global_prices and token_b not in global_prices:
+                        price_a = global_prices[token_a]
+                        price_b = max(1, int(Decimal(price_a) / clearing_r))
+                    elif token_b in global_prices and token_a not in global_prices:
+                        price_b = global_prices[token_b]
+                        price_a = max(1, int(Decimal(price_b) * clearing_r))
+                    elif token_a in global_prices and token_b in global_prices:
+                        price_a = global_prices[token_a]
+                        price_b = global_prices[token_b]
                     else:
-                        price_a = int(scale)
-                        price_b = max(1, int(scale / clearing_r))
+                        if clearing_r <= 1:
+                            price_b = int(scale)
+                            price_a = max(1, int(scale * clearing_r))
+                        else:
+                            price_a = int(scale)
+                            price_b = max(1, int(scale / clearing_r))
 
                     prices[token_a] = price_a
                     prices[token_b] = price_b

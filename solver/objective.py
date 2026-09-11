@@ -44,7 +44,15 @@ class CoWObjectiveCalculator:
             )
 
             surplus = self.calculate_order_surplus(order, executed_buy_amount)
-            if surplus > 0:
+            if surplus <= 0:
+                continue
+
+            # Normalize surplus to shared reference price (USD / reference units)
+            token_meta = auction.tokens.get(order.buy_token)
+            if token_meta and token_meta.reference_price and token_meta.decimals:
+                norm_factor = Decimal(token_meta.reference_price) / Decimal(10**token_meta.decimals)
+                total_surplus += int(Decimal(surplus) * norm_factor)
+            else:
                 total_surplus += surplus
 
         return total_surplus

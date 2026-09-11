@@ -86,3 +86,50 @@ def test_no_cow_match_when_spread_is_disjoint():
     assert solution is not None
     assert len(solution.trades) == 0
     assert solution.score == 0
+
+
+def test_matched_uids_not_reused():
+    """Verify that an order matched in one pair is not executed again in another pair."""
+    DAI = "0x6b175474e89094c44da98b954eedeac495271d0f"
+    auction = AuctionInstance(
+        id="test_batch_dedup",
+        tokens={
+            WETH: TokenMetadata(decimals=18, reference_price=3150000000),
+            USDC: TokenMetadata(decimals=6, reference_price=1000000),
+            DAI: TokenMetadata(decimals=18, reference_price=1000000),
+        },
+        orders=[
+            # Alice: Sell 1 WETH for USDC
+            Order(
+                uid="order_alice",
+                sell_token=WETH,
+                buy_token=USDC,
+                sell_amount=1_000_000_000_000_000_000,
+                buy_amount=3_100_000_000,
+            ),
+            # Bob: Sell USDC for WETH
+            Order(
+                uid="order_bob",
+                sell_token=USDC,
+                buy_token=WETH,
+                sell_amount=3_200_000_000,
+                buy_amount=1_000_000_000_000_000_000,
+            ),
+            # Charlie: Also tries to match with Alice's WETH by selling USDC
+            Order(
+                uid="order_charlie",
+                sell_token=USDC,
+                buy_token=WETH,
+                sell_amount=3_300_000_000,
+                buy_amount=1_000_000_000_000_000_000,
+            ),
+        ],
+    )
+
+    matcher = CoWMatcher()
+    solution = matcher.match_auction(auction)
+
+    # Alice should be matched at most once
+    alice_matches = [t for t in solution.trades if t.order_uid == "order_alice"]
+    assert len(alice_matches) == 1
+

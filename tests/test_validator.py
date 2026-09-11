@@ -109,3 +109,42 @@ def test_validator_rejects_missing_price():
     result = validator.validate(auction, solution)
     assert not result.is_valid
     assert any("Missing clearing price" in err for err in result.errors)
+
+
+def test_validator_rejects_token_conservation_deficit():
+    """Verify validator flags any settlement where token outflow exceeds inflow."""
+    auction = AuctionInstance(
+        id="deficit_batch",
+        tokens={WETH: TokenMetadata(decimals=18), USDC: TokenMetadata(decimals=6)},
+        orders=[
+            Order(
+                uid="order_alice",
+                sell_token=WETH,
+                buy_token=USDC,
+                sell_amount=1_000_000_000_000_000_000,
+                buy_amount=3_100_000_000,
+            ),
+            Order(
+                uid="order_bob",
+                sell_token=USDC,
+                buy_token=WETH,
+                sell_amount=3_150_000_000,
+                buy_amount=990_000_000_000_000_000,
+            ),
+        ],
+    )
+
+    # Imbalance: Alice trades 1 WETH at clearing price, Bob trades only 2000 USDC -> USDC deficit
+    solution = Solution(
+        prices={WETH: 3_150_000_000, USDC: 1_000_000_000_000_000_000},
+        trades=[
+            TradeExecution(order_uid="order_alice", executed_amount=1_000_000_000_000_000_000),
+            TradeExecution(order_uid="order_bob", executed_amount=2_000_000_000),
+        ],
+    )
+
+    validator = SettlementValidator()
+    result = validator.validate(auction, solution)
+    assert not result.is_valid
+    assert any("Token conservation deficit" in err for err in result.errors)
+
